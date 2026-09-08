@@ -47,9 +47,11 @@ INSTALLED_APPS = [
 
     # third party
     "django_jalali",
+    "rest_framework",
 
     # local apps
-    'payroll',
+    "payroll",
+    
     
 ]
 
