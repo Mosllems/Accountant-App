@@ -118,7 +118,16 @@ class MonthlyAccount(models.Model):
         """
         مبلغ کل پرداختی
         """
-        return self.payments.aggregate(total=Sum("amount"))["total"] or Decimal("0")
+        # اگر payments قبلاً prefetch شده، بدون کوئری جدید از حافظه جمع می‌زنیم
+        if "payments" in getattr(self, "_prefetched_objects_cache", {}):
+            return sum((p.amount for p in self.payments.all()), Decimal("0"))
+        # کش روی آبجکت: چون balance و status و status_display
+        # چند بار پشت سر هم total_payments را صدا می‌زنند
+        if hasattr(self, "_total_payments_cache"):
+            return self._total_payments_cache
+        total = self.payments.aggregate(total=Sum("amount"))["total"] or Decimal("0")
+        self._total_payments_cache = total
+        return total
 
     @property
     def balance(self):
@@ -132,10 +141,11 @@ class MonthlyAccount(models.Model):
         """
         وضعیت
         """
-        if self.balance > 0:
+        bal = self.balance
+        if bal > 0:
             return self.Status.CREDITOR
 
-        if self.balance < 0:
+        if bal < 0:
             return self.Status.DEBTOR
 
         return self.Status.PAID

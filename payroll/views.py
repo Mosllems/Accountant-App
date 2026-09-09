@@ -8,7 +8,9 @@ from .serializers import WorkerListSerializer, WorkerDetailSerializer, MonthlySa
 from .permissions import IsAdminOrReadOnly
 
 class PaymentViewSet(ModelViewSet):
-    queryset = Payment.objects.select_related("monthly_account__monthly_salary__worker").all()
+    queryset = Payment.objects.select_related(
+        "monthly_account__monthly_salary__worker"
+    ).prefetch_related("monthly_account__payments").all()
     serializer_class = PaymentSerializer
     permission_classes = [IsAdminOrReadOnly]
     
