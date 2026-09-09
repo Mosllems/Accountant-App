@@ -3,18 +3,6 @@ from rest_framework import serializers
 from .models import (Worker, MonthlySalary, MonthlyAccount, Payment)
 
 
-class PaymentSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Payment
-        fields = [
-            "id",
-            "amount",
-            "date",
-            "description",
-        ]
-        read_only_fields = ["id"]
-
-
 class MonthlySalarySerializer(serializers.ModelSerializer):
     class Meta:
         model = MonthlySalary
@@ -94,6 +82,20 @@ class MonthlyAccountSerializer(serializers.ModelSerializer):
         ]
 
 
+class PaymentSerializer(serializers.ModelSerializer):
+    monthly_account = MonthlyAccountSerializer(read_only=True)
+    class Meta:
+        model = Payment
+        fields = [
+            "id",
+            "monthly_account",
+            "amount",
+            "date",
+            "description",
+        ]
+        read_only_fields = ["id"]
+        
+        
 class WorkerListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Worker
@@ -122,7 +124,7 @@ class WorkerDetailSerializer(serializers.ModelSerializer):
 
     def get_monthly_accounts(self, obj):
         accounts = (MonthlyAccount.objects
-            .filter(monthly_salary__worker=obj)
+            .filter(monthly_salaryworker=obj)
             .select_related("monthly_salary", "monthly_salary__worker")
             .prefetch_related("payments")
         )
