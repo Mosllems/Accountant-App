@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     "django_jalali",
     "rest_framework",
     "debug_toolbar",
+    "corsheaders",
 
     # local apps
     "payroll",
@@ -58,6 +59,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "debug_toolbar.middleware.DebugToolbarMiddleware",
+    "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -139,3 +141,14 @@ STATIC_URL = "static/"
 INTERNAL_IPS = [
     "127.0.0.1",
 ]
+
+# CORS - برای اینکه اپ فلاتر (وب/موبایل) بتونه به API درخواست بزنه
+# فقط در حالت توسعه همه origins مجاز هستند
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in env.str("CORS_ALLOWED_ORIGINS", default="").split(",")
+    if origin.strip()
+]
+
+if DEBUG and not CORS_ALLOWED_ORIGINS:
+    CORS_ALLOW_ALL_ORIGINS = True
