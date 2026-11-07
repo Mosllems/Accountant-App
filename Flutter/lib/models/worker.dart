@@ -1,43 +1,59 @@
-// مدل‌های داده‌ای مربوط به کارگر و حساب‌های ماهانه.
-// این کلاس‌ها خروجی JSON بک‌اند جنگو را به آبجکت‌های Dart تبدیل می‌کنند.
+// Data models mirroring the Django REST API (payroll app).
+// Field meanings follow payroll/models.py; values are never recomputed here.
 
-/// کارگر در حالت لیست (صفحه اصلی) — فقط اطلاعات پایه.
+import '../core/format/jalali.dart';
+import '../core/format/money.dart';
+
+/// Account status values sent by the backend (`MonthlyAccount.status`).
+enum AccountStatus {
+  debtor('debtor', 'بدهکار'),
+  creditor('creditor', 'طلبکار'),
+  paid('paid', 'تسویه‌شده'),
+  unknown('', 'نامشخص');
+
+  const AccountStatus(this.apiValue, this.fallbackLabel);
+
+  final String apiValue;
+  final String fallbackLabel;
+
+  static AccountStatus fromApi(String? value) =>
+      AccountStatus.values.firstWhere(
+        (s) => s.apiValue == value,
+        orElse: () => AccountStatus.unknown,
+      );
+}
+
+/// Worker as returned by `/api/workers/`.
 class Worker {
-  final int id;
-  final String name;
-  final String startDate; // تاریخ جلالی به‌صورت رشته (مثلاً 1403-05-12)
-  final bool isActive;
-
-  Worker({
+  const Worker({
     required this.id,
     required this.name,
     required this.startDate,
     required this.isActive,
   });
 
-  factory Worker.fromJson(Map<String, dynamic> json) {
-    return Worker(
-      id: json['id'] as int,
-      name: json['name'] as String? ?? '',
-      startDate: json['start_date']?.toString() ?? '',
-      isActive: json['is_active'] as bool? ?? true,
-    );
-  }
-}
+  factory Worker.fromJson(Map<String, dynamic> json) => Worker(
+    id: json['id'] as int,
+    name: json['name'] as String? ?? '',
+    startDate: json['start_date']?.toString() ?? '',
+    isActive: json['is_active'] as bool? ?? true,
+  );
 
-/// کارگر در حالت جزئیات — شامل لیست حساب‌های ماهانه.
-class WorkerDetail {
   final int id;
   final String name;
+
+  /// Jalali date string from the API, e.g. `1403-05-12`.
   final String startDate;
   final bool isActive;
-  final List<MonthlyAccount> monthlyAccounts;
+}
 
-  WorkerDetail({
-    required this.id,
-    required this.name,
-    required this.startDate,
-    required this.isActive,
+/// Worker with all monthly accounts, from `/api/workers/{id}/`.
+class WorkerDetail extends Worker {
+  const WorkerDetail({
+    required super.id,
+    required super.name,
+    required super.startDate,
+    required super.isActive,
     required this.monthlyAccounts,
   });
 
@@ -53,47 +69,69 @@ class WorkerDetail {
           .toList(),
     );
   }
+
+  final List<MonthlyAccount> monthlyAccounts;
+
+  /// The account of a given Jalali month, if the backend has one.
+  MonthlyAccount? accountFor(YearMonth month) {
+    for (final a in monthlyAccounts) {
+      if (a.yearMonth == month) return a;
+    }
+    return null;
+  }
+
+  /// Most recent month that has an account.
+  MonthlyAccount? get latestAccount {
+    MonthlyAccount? latest;
+    for (final a in monthlyAccounts) {
+      final ym = a.yearMonth;
+      if (ym == null) continue;
+      if (latest == null || ym.compareTo(latest.yearMonth!) > 0) latest = a;
+    }
+    return latest;
+  }
+
+  /// All payments of this worker (across months).
+  Iterable<Payment> get allPayments =>
+      monthlyAccounts.expand((a) => a.payments);
+
+  /// Most recent payment by date (then id), or null.
+  Payment? get lastPayment {
+    Payment? last;
+    for (final p in allPayments) {
+      if (last == null || p.compareByDate(last) > 0) last = p;
+    }
+    return last;
+  }
 }
 
-/// حقوق ماهانه — تودرتو داخل حساب ماهانه.
+/// Nested `monthly_salary`.
 class MonthlySalary {
-  final int id;
-  final int year;
-  final int month;
-  final num salary;
-
-  MonthlySalary({
+  const MonthlySalary({
     required this.id,
     required this.year,
     required this.month,
     required this.salary,
   });
 
-  factory MonthlySalary.fromJson(Map<String, dynamic> json) {
-    return MonthlySalary(
-      id: json['id'] as int,
-      year: json['year'] as int? ?? 0,
-      month: json['month'] as int? ?? 0,
-      salary: _toNum(json['salary']),
-    );
-  }
+  factory MonthlySalary.fromJson(Map<String, dynamic> json) => MonthlySalary(
+    id: json['id'] as int,
+    year: json['year'] as int,
+    month: json['month'] as int,
+    salary: _money(json, 'salary'),
+  );
+
+  final int id;
+  final int year;
+  final int month;
+
+  /// Base monthly salary (input value) — NOT the accrued amount.
+  final num salary;
 }
 
-/// حساب ماهانه — با تمام مقادیر محاسبه‌شده در بک‌اند.
+/// Monthly account with backend-computed values.
 class MonthlyAccount {
-  final int id;
-  final MonthlySalary? monthlySalary;
-  final int eligibleDays;
-  final num dailySalary;
-  final num calculatedAmount;
-  final num totalPayments;
-  final num balance;
-  final String status; // creditor | debtor | paid
-  final String statusDisplay; // طلبکار | بدهکار | تسویه شده
-  final String? settledAt;
-  final List<Payment> payments;
-
-  MonthlyAccount({
+  const MonthlyAccount({
     required this.id,
     required this.monthlySalary,
     required this.eligibleDays,
@@ -109,18 +147,18 @@ class MonthlyAccount {
 
   factory MonthlyAccount.fromJson(Map<String, dynamic> json) {
     final paymentsJson = json['payments'] as List<dynamic>? ?? [];
+    final salaryJson = json['monthly_salary'];
     return MonthlyAccount(
       id: json['id'] as int,
-      monthlySalary: json['monthly_salary'] != null
-          ? MonthlySalary.fromJson(
-              json['monthly_salary'] as Map<String, dynamic>)
+      monthlySalary: salaryJson is Map<String, dynamic>
+          ? MonthlySalary.fromJson(salaryJson)
           : null,
-      eligibleDays: json['eligible_days'] as int? ?? 0,
-      dailySalary: _toNum(json['daily_salary']),
-      calculatedAmount: _toNum(json['calculated_amount']),
-      totalPayments: _toNum(json['total_payments']),
-      balance: _toNum(json['balance']),
-      status: json['status']?.toString() ?? '',
+      eligibleDays: json['eligible_days'] as int?,
+      dailySalary: parseMoney(json['daily_salary']),
+      calculatedAmount: _money(json, 'calculated_amount'),
+      totalPayments: _money(json, 'total_payments'),
+      balance: _money(json, 'balance'),
+      status: AccountStatus.fromApi(json['status']?.toString()),
       statusDisplay: json['status_display']?.toString() ?? '',
       settledAt: json['settled_at']?.toString(),
       payments: paymentsJson
@@ -128,36 +166,79 @@ class MonthlyAccount {
           .toList(),
     );
   }
+
+  final int id;
+  final MonthlySalary? monthlySalary;
+  final int? eligibleDays;
+  final num? dailySalary;
+
+  /// Accrued salary for the eligible days (backend computed).
+  final num calculatedAmount;
+  final num totalPayments;
+  final num balance;
+  final AccountStatus status;
+
+  /// Backend label for [status] — preferred for display.
+  final String statusDisplay;
+  final String? settledAt;
+  final List<Payment> payments;
+
+  YearMonth? get yearMonth => monthlySalary == null
+      ? null
+      : YearMonth(monthlySalary!.year, monthlySalary!.month);
+
+  String get statusLabel =>
+      statusDisplay.isNotEmpty ? statusDisplay : status.fallbackLabel;
 }
 
-/// یک پرداخت.
+/// A payment (nested in accounts, or from `/api/payments/`).
 class Payment {
-  final int id;
-  final num amount;
-  final String date;
-  final String? description;
-
-  Payment({
+  const Payment({
     required this.id,
     required this.amount,
     required this.date,
     required this.description,
   });
 
-  factory Payment.fromJson(Map<String, dynamic> json) {
-    return Payment(
-      id: json['id'] as int,
-      amount: _toNum(json['amount']),
-      date: json['date']?.toString() ?? '',
-      description: json['description']?.toString(),
-    );
+  factory Payment.fromJson(Map<String, dynamic> json) => Payment(
+    id: json['id'] as int,
+    amount: _money(json, 'amount'),
+    date: json['date']?.toString() ?? '',
+    description: (json['description'] as String?)?.trim().isEmpty ?? true
+        ? null
+        : (json['description'] as String).trim(),
+  );
+
+  final int id;
+  final num amount;
+
+  /// Jalali date string from the API, e.g. `1405-06-17`.
+  final String date;
+  final String? description;
+
+  Jalali? get jalaliDate => parseApiDate(date);
+
+  /// Orders by date, then id (newer id wins on same date).
+  int compareByDate(Payment other) {
+    final a = jalaliDate;
+    final b = other.jalaliDate;
+    if (a != null && b != null) {
+      final c = a.compareTo(b);
+      if (c != 0) return c;
+    } else if (a != null) {
+      return 1;
+    } else if (b != null) {
+      return -1;
+    }
+    return id.compareTo(other.id);
   }
 }
 
-/// DRF مقادیر Decimal را گاهی به‌صورت رشته ("12000") برمی‌گرداند.
-/// این تابع هم رشته و هم عدد را امن به num تبدیل می‌کند.
-num _toNum(dynamic value) {
-  if (value == null) return 0;
-  if (value is num) return value;
-  return num.tryParse(value.toString()) ?? 0;
+/// Required money field: fails loudly instead of silently becoming 0.
+num _money(Map<String, dynamic> json, String key) {
+  final value = parseMoney(json[key]);
+  if (value == null) {
+    throw FormatException('Invalid money field "$key"');
+  }
+  return value;
 }
