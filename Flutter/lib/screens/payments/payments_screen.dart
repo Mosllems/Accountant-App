@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/format/digits.dart';
@@ -14,6 +16,7 @@ import '../../core/widgets/search_field.dart';
 import '../../core/widgets/state_views.dart';
 import '../../core/widgets/worker_picker.dart';
 import '../../models/worker.dart';
+import '../../services/api_client.dart';
 import '../../services/app_scope.dart';
 import '../../services/payroll_repository.dart';
 import '../common/snapshot_view.dart';
@@ -22,9 +25,10 @@ import 'payment_flow.dart';
 
 /// Payments tab: manual search, worker + date-range filters, paging.
 ///
-/// The API has no server-side search/filter/pagination (BACKEND-GAP
-/// (list-query)); the full list is already loaded, so filtering and paging
-/// happen locally and stay complete.
+/// Pages come from the backend (`GET /api/payments/?page=N`); search and
+/// filters are sent to the server, so every page and the total count cover
+/// all matching payments — never just the rows already loaded.
+/// The snapshot is still used for the worker picker.
 class PaymentsScreen extends StatefulWidget {
   const PaymentsScreen({super.key});
 
@@ -33,31 +37,99 @@ class PaymentsScreen extends StatefulWidget {
 }
 
 class _PaymentsScreenState extends State<PaymentsScreen> {
-  static const _pageSize = 20;
-
   String _query = '';
   WorkerDetail? _worker;
   Jalali? _from;
   Jalali? _to;
-  int _page = 0;
+  int _page = 1;
   int _searchReset = 0;
+
+  PayrollRepository? _repo;
+  PayrollSnapshot? _seenSnapshot;
+  PaymentPage? _result;
+  ApiException? _error;
+  bool _loading = false;
+
+  /// Only the latest request may update the screen (filters can change
+  /// while an older page is still loading).
+  int _requestId = 0;
 
   bool get _hasFilters =>
       _query.isNotEmpty || _worker != null || _from != null || _to != null;
 
-  void _update(VoidCallback change) => setState(() {
-    change();
-    _page = 0; // any search/filter change returns to the first page
-  });
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final repo = AppScope.of(context);
+    if (!identical(repo, _repo)) {
+      _repo?.removeListener(_onRepositoryChanged);
+      _repo = repo..addListener(_onRepositoryChanged);
+      _seenSnapshot = repo.snapshot;
+      _load();
+    }
+  }
 
-  List<PaymentEntry> _apply(PayrollSnapshot data) => data.payments.where((e) {
-    if (!matchesSearch(e.worker.name, _query)) return false;
-    if (_worker != null && e.worker.id != _worker!.id) return false;
-    final d = e.payment.jalaliDate;
-    if (_from != null && (d == null || d.compareTo(_from!) < 0)) return false;
-    if (_to != null && (d == null || d.compareTo(_to!) > 0)) return false;
-    return true;
-  }).toList();
+  @override
+  void dispose() {
+    _repo?.removeListener(_onRepositoryChanged);
+    super.dispose();
+  }
+
+  /// Data changed (refresh, new payment, worker deleted) → reload the page.
+  void _onRepositoryChanged() {
+    final snapshot = _repo?.snapshot;
+    if (snapshot == null || identical(snapshot, _seenSnapshot)) return;
+    _seenSnapshot = snapshot;
+    _load();
+  }
+
+  Future<void> _load() async {
+    final repo = _repo;
+    if (repo == null) return;
+    final id = ++_requestId;
+    setState(() => _loading = true);
+    try {
+      final result = await repo.fetchPaymentsPage(
+        page: _page,
+        search: normalizeForSearch(_query).trim(),
+        workerId: _worker?.id,
+        from: _from,
+        to: _to,
+      );
+      if (!mounted || id != _requestId) return;
+      setState(() {
+        _result = result;
+        _error = null;
+        _loading = false;
+      });
+    } on ApiException catch (e) {
+      if (!mounted || id != _requestId) return;
+      // The page no longer exists (rows were removed) → back to page 1.
+      if (e.kind == ApiErrorKind.notFound && _page > 1) {
+        _page = 1;
+        unawaited(_load());
+        return;
+      }
+      setState(() {
+        _error = e;
+        _loading = false;
+      });
+    }
+  }
+
+  void _update(VoidCallback change) {
+    change();
+    _page = 1; // any search/filter change returns to the first page
+    _load();
+  }
+
+  void _goToPage(int page) {
+    _page = page;
+    _load();
+  }
+
+  Future<void> _refresh() =>
+      Future.wait([AppScope.of(context).refresh(), _load()]);
 
   Future<void> _pickWorker(PayrollSnapshot data) async {
     final choice = await showWorkerPicker(
@@ -92,6 +164,49 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
     });
   }
 
+  Widget _list() {
+    if (_error != null) {
+      return AppCard(
+        child: ErrorState(
+          compact: true,
+          message: _error!.message,
+          onRetry: _load,
+        ),
+      );
+    }
+    final result = _result;
+    if (result == null) return const SkeletonList(count: 7, rowHeight: 64);
+    final visible = result.items;
+    if (visible.isEmpty) {
+      return AppCard(
+        child: EmptyState(
+          compact: true,
+          icon: _hasFilters
+              ? Icons.filter_alt_off_outlined
+              : Icons.receipt_long_outlined,
+          title: _hasFilters
+              ? 'نتیجه‌ای با این فیلترها یافت نشد'
+              : 'هنوز پرداختی ثبت نشده است',
+        ),
+      );
+    }
+    return AppCard(
+      padding: EdgeInsets.zero,
+      child: Column(
+        children: [
+          for (var i = 0; i < visible.length; i++) ...[
+            if (i > 0)
+              const Divider(indent: AppSpacing.lg, endIndent: AppSpacing.lg),
+            PaymentRow(
+              entry: visible[i],
+              onTap: () => showPaymentDetailsDialog(context, visible[i]),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return SafeArea(
@@ -101,16 +216,9 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
           child: SkeletonList(count: 7, rowHeight: 64),
         ),
         builder: (context, data) {
-          final filtered = _apply(data);
-          final pageCount = (filtered.length / _pageSize).ceil();
-          final page = pageCount == 0 ? 0 : _page.clamp(0, pageCount - 1);
-          final visible = filtered
-              .skip(page * _pageSize)
-              .take(_pageSize)
-              .toList();
-
+          final result = _error == null ? _result : null;
           return RefreshIndicator(
-            onRefresh: AppScope.of(context).refresh,
+            onRefresh: _refresh,
             child: ListView(
               padding: const EdgeInsets.only(bottom: AppSpacing.xxl),
               children: [
@@ -158,54 +266,29 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                         }),
                       ),
                       const SizedBox(height: AppSpacing.md),
+                      // A new page is loading: keep the old rows, thin bar.
+                      SizedBox(
+                        height: 2,
+                        child: _loading && _result != null
+                            ? const LinearProgressIndicator(
+                                minHeight: 2,
+                                backgroundColor: AppColors.accentSoft,
+                              )
+                            : null,
+                      ),
                       Padding(
                         padding: const EdgeInsets.symmetric(
                           horizontal: AppSpacing.page,
                         ),
-                        child: visible.isEmpty
-                            ? AppCard(
-                                child: EmptyState(
-                                  compact: true,
-                                  icon: _hasFilters
-                                      ? Icons.filter_alt_off_outlined
-                                      : Icons.receipt_long_outlined,
-                                  title: _hasFilters
-                                      ? 'نتیجه‌ای با این فیلترها یافت نشد'
-                                      : 'هنوز پرداختی ثبت نشده است',
-                                ),
-                              )
-                            : AppCard(
-                                padding: EdgeInsets.zero,
-                                child: Column(
-                                  children: [
-                                    for (
-                                      var i = 0;
-                                      i < visible.length;
-                                      i++
-                                    ) ...[
-                                      if (i > 0)
-                                        const Divider(
-                                          indent: AppSpacing.lg,
-                                          endIndent: AppSpacing.lg,
-                                        ),
-                                      PaymentRow(
-                                        entry: visible[i],
-                                        onTap: () => showPaymentDetailsDialog(
-                                          context,
-                                          visible[i],
-                                        ),
-                                      ),
-                                    ],
-                                  ],
-                                ),
-                              ),
+                        child: _list(),
                       ),
-                      if (pageCount > 0)
+                      if (result != null && result.pageCount > 0)
                         _Pager(
-                          page: page,
-                          pageCount: pageCount,
-                          total: filtered.length,
-                          onChanged: (p) => setState(() => _page = p),
+                          page: result.page - 1,
+                          pageCount: result.pageCount,
+                          total: result.count,
+                          enabled: !_loading,
+                          onChanged: (p) => _goToPage(p + 1),
                         ),
                     ],
                   ),
@@ -348,12 +431,16 @@ class _Pager extends StatelessWidget {
     required this.page,
     required this.pageCount,
     required this.total,
+    required this.enabled,
     required this.onChanged,
   });
 
   final int page;
   final int pageCount;
   final int total;
+
+  /// False while a page is loading (prevents double taps).
+  final bool enabled;
   final ValueChanged<int> onChanged;
 
   @override
@@ -369,7 +456,7 @@ class _Pager extends StatelessWidget {
         children: [
           IconButton.outlined(
             tooltip: 'صفحه‌ی قبل',
-            onPressed: page > 0 ? () => onChanged(page - 1) : null,
+            onPressed: enabled && page > 0 ? () => onChanged(page - 1) : null,
             icon: const Icon(Icons.chevron_left),
           ),
           Expanded(
@@ -385,7 +472,9 @@ class _Pager extends StatelessWidget {
           ),
           IconButton.outlined(
             tooltip: 'صفحه‌ی بعد',
-            onPressed: page < pageCount - 1 ? () => onChanged(page + 1) : null,
+            onPressed: enabled && page < pageCount - 1
+                ? () => onChanged(page + 1)
+                : null,
             icon: const Icon(Icons.chevron_right),
           ),
         ],

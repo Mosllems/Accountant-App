@@ -88,4 +88,97 @@ void main() {
       ),
     );
   });
+
+  group('paginated lists', () {
+    http.Response page(List<int> ids, int count, String? next) =>
+        http.Response.bytes(
+          utf8.encode(
+            jsonEncode({
+              'count': count,
+              'next': next,
+              'previous': null,
+              'results': [
+                for (final id in ids) {'id': id},
+              ],
+            }),
+          ),
+          200,
+        );
+
+    test('follows next through all pages, always via baseUrl', () async {
+      final requested = <Uri>[];
+      final api = ApiClient(
+        client: MockClient((req) async {
+          requested.add(req.url);
+          return req.url.queryParameters['page'] == '2'
+              ? page([3], 3, null)
+              : page([1, 2], 3, 'http://other-host:9999/api/workers/?page=2');
+        }),
+      );
+
+      final workers = await api.getWorkers();
+
+      expect(workers.map((w) => w['id']), [1, 2, 3]);
+      expect(requested, hasLength(2));
+      expect(
+        requested.last.toString(),
+        '${ApiClient.baseUrl}/api/workers/?page=2',
+      );
+    });
+
+    test(
+      'a failing later page fails the whole list (no partial data)',
+      () async {
+        final api = ApiClient(
+          client: MockClient(
+            (req) async => req.url.queryParameters['page'] == '2'
+                ? http.Response('', 500)
+                : page([1], 2, 'http://h/api/workers/?page=2'),
+          ),
+        );
+        await expectLater(
+          api.getWorkers(),
+          throwsA(
+            isA<ApiException>().having(
+              (e) => e.kind,
+              'kind',
+              ApiErrorKind.server,
+            ),
+          ),
+        );
+      },
+    );
+
+    test('count mismatch → invalid response', () async {
+      final api = ApiClient(
+        client: MockClient((_) async => page([1], 5, null)),
+      );
+      await expectLater(
+        api.getWorkers(),
+        throwsA(
+          isA<ApiException>().having(
+            (e) => e.kind,
+            'kind',
+            ApiErrorKind.invalidResponse,
+          ),
+        ),
+      );
+    });
+
+    test('plain unpaginated array still works', () async {
+      final api = ApiClient(
+        client: MockClient(
+          (_) async => http.Response.bytes(
+            utf8.encode(
+              jsonEncode([
+                {'id': 7},
+              ]),
+            ),
+            200,
+          ),
+        ),
+      );
+      expect((await api.getWorkers()).single['id'], 7);
+    });
+  });
 }

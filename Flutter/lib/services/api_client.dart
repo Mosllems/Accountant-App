@@ -67,9 +67,9 @@ class ApiClient {
 
   // ---------------------------------------------------------------- workers
 
-  /// `GET /api/workers/`
-  Future<List<Map<String, dynamic>>> getWorkers() async =>
-      _asList(await _send('GET', '/api/workers/'));
+  /// `GET /api/workers/` — all pages (the backend paginates lists).
+  Future<List<Map<String, dynamic>>> getWorkers() =>
+      _getAllPages('/api/workers/');
 
   /// `GET /api/workers/{id}/` (includes monthly_accounts + payments).
   Future<Map<String, dynamic>> getWorkerDetail(int id) async =>
@@ -112,6 +112,31 @@ class ApiClient {
       'description': description,
     }),
   );
+
+  /// `GET /api/payments/?page=N` — one server page. Search and filters run
+  /// on the server (`search`, `worker`, `date_from`, `date_to`), so the
+  /// page and `count` already reflect them.
+  Future<Map<String, dynamic>> getPaymentsPage({
+    required int page,
+    String search = '',
+    int? workerId,
+    String? dateFrom,
+    String? dateTo,
+  }) async {
+    final query = <String, String>{
+      'page': '$page',
+      if (search.isNotEmpty) 'search': search,
+      if (workerId != null) 'worker': '$workerId',
+      'date_from': ?dateFrom,
+      'date_to': ?dateTo,
+    };
+    final path = Uri(path: '/api/payments/', queryParameters: query);
+    final response = _asMap(await _send('GET', path.toString()));
+    if (response['results'] is! List || response['count'] is! int) {
+      throw _invalid();
+    }
+    return response;
+  }
 
   // ---------------------------------------------------------------- helpers
 
@@ -194,15 +219,40 @@ class ApiClient {
     );
   }
 
-  List<Map<String, dynamic>> _asList(dynamic response) {
-    // DRF may return a plain list or a paginated {results: [...]} object.
-    final list = response is List
-        ? response
-        : (response is Map && response['results'] is List)
-        ? response['results'] as List
-        : null;
-    if (list == null) throw _invalid();
-    return list.cast<Map<String, dynamic>>();
+  /// Safety cap so a broken `next` link can never loop forever.
+  static const int _maxPages = 1000;
+
+  /// Fetches every page of a DRF list and returns the complete list.
+  ///
+  /// The app computes totals/reports from complete data, so a list that
+  /// stopped at page 1 would silently show wrong numbers. Any failed page
+  /// fails the whole call — never return a partial list.
+  /// Also accepts an unpaginated plain JSON array.
+  Future<List<Map<String, dynamic>>> _getAllPages(String path) async {
+    final items = <Map<String, dynamic>>[];
+    int? count;
+    String? next = path;
+    for (var page = 0; next != null; page++) {
+      if (page >= _maxPages) throw _invalid();
+      final response = await _send('GET', next);
+      if (response is List) return response.cast<Map<String, dynamic>>();
+      if (response is! Map || response['results'] is! List) throw _invalid();
+      items.addAll((response['results'] as List).cast<Map<String, dynamic>>());
+      count = response['count'] is int ? response['count'] as int : count;
+      next = _nextPath(response['next']);
+    }
+    // Data changed between pages (rows shifted) → don't trust the result.
+    if (count != null && count != items.length) throw _invalid();
+    return items;
+  }
+
+  /// DRF's `next` is an absolute URL built from the request host. Only its
+  /// path + query are used, so requests always go to [baseUrl].
+  String? _nextPath(dynamic next) {
+    if (next == null) return null;
+    final uri = next is String ? Uri.tryParse(next) : null;
+    if (uri == null || uri.path.isEmpty) throw _invalid();
+    return uri.hasQuery ? '${uri.path}?${uri.query}' : uri.path;
   }
 
   Map<String, dynamic> _asMap(dynamic response) {

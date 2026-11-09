@@ -3,7 +3,15 @@ from rest_framework import serializers
 from .models import (Worker, MonthlySalary, MonthlyAccount, Payment)
 
 
-class MonthlySalarySerializer(serializers.ModelSerializer):
+class WorkerShortSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Worker
+        fields = ["id", "name"]
+
+
+class MonthlySalaryInWorkerSerializer(serializers.ModelSerializer):
+    """حقوق ماهانه داخل جزئیات یک کارگر: کارگر را تکرار نمی‌کنیم."""
+
     class Meta:
         model = MonthlySalary
         fields = [
@@ -14,24 +22,64 @@ class MonthlySalarySerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id"]
 
+
+class MonthlySalarySerializer(MonthlySalaryInWorkerSerializer):
+    worker = WorkerShortSerializer(read_only=True)
+
+    class Meta(MonthlySalaryInWorkerSerializer.Meta):
+        fields = [
+            "id",
+            "worker",
+            "year",
+            "month",
+            "salary",
+        ]
+
+
 class MonthlyAccountShortSerializer(serializers.ModelSerializer):
+    year = serializers.IntegerField(source="monthly_salary.year", read_only=True)
+    month = serializers.IntegerField(source="monthly_salary.month", read_only=True)
+    status = serializers.CharField(read_only=True)
+    status_display = serializers.CharField(read_only=True)
+    balance = serializers.DecimalField(
+        max_digits=10,
+        decimal_places=0,
+        read_only=True,
+    )
+
     class Meta:
         model = MonthlyAccount
         fields = [
             "id",
+            "year",
+            "month",
             "status",
             "status_display",
             "balance",
         ]
 
 
+class PaymentInAccountSerializer(serializers.ModelSerializer):
+    """پرداخت داخل یک حساب ماهانه: فقط فیلدهای خود پرداخت."""
+
+    class Meta:
+        model = Payment
+        fields = ["id", "amount", "date", "description"]
+
+
 class PaymentSerializer(serializers.ModelSerializer):
     monthly_account = MonthlyAccountShortSerializer(read_only=True)
+    # کارگرِ صاحب پرداخت: پرداخت ← حساب ماهانه ← حقوق ماهانه ← کارگر
+    worker = WorkerShortSerializer(
+        source="monthly_account.monthly_salary.worker",
+        read_only=True,
+    )
 
     class Meta:
         model = Payment
         fields = [
             "id",
+            "worker",
             "monthly_account",
             "amount",
             "date",
@@ -72,7 +120,8 @@ class MonthlyAccountSerializer(serializers.ModelSerializer):
     status = serializers.CharField(read_only=True)
     status_display = serializers.CharField(read_only=True)
 
-    payments = PaymentSerializer(
+    # پرداخت‌ها داخل همین حساب‌اند؛ پس حساب و کارگر را دوباره تکرار نمی‌کنیم
+    payments = PaymentInAccountSerializer(
         many=True,
         read_only=True,
     )
@@ -106,7 +155,13 @@ class MonthlyAccountSerializer(serializers.ModelSerializer):
             "settled_at",
         ]
 
-        
+
+class MonthlyAccountInWorkerSerializer(MonthlyAccountSerializer):
+    """حساب ماهانه داخل جزئیات یک کارگر: حقوقش بدون کارگر نمایش داده می‌شود."""
+
+    monthly_salary = MonthlySalaryInWorkerSerializer(read_only=True)
+
+
 class WorkerListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Worker
@@ -139,4 +194,4 @@ class WorkerDetailSerializer(serializers.ModelSerializer):
             .select_related("monthly_salary", "monthly_salary__worker")
             .prefetch_related("payments")
         )
-        return MonthlyAccountSerializer(accounts, many=True).data
+        return MonthlyAccountInWorkerSerializer(accounts, many=True).data

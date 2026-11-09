@@ -52,10 +52,57 @@ Map<String, dynamic> _workerDetail() {
   };
 }
 
-PayrollRepository _repo({int statusCode = 200}) {
+/// One row of `GET /api/payments/` (worker + account month included).
+Map<String, dynamic> _paymentRow(int id, String date) {
+  final now = YearMonth.current();
+  return {
+    'id': id,
+    'worker': {'id': 1, 'name': 'علی رضایی'},
+    'monthly_account': {
+      'id': 10,
+      'year': now.year,
+      'month': now.month,
+      'status': 'debtor',
+      'status_display': 'بدهکار',
+      'balance': '25000000',
+    },
+    'amount': '5000000',
+    'date': date,
+    'description': id == 7 ? 'علی‌الحساب' : null,
+  };
+}
+
+/// Fake paginated `/api/payments/`: 3 rows, page size 2. Records each
+/// request URL in [requests].
+http.Response _paymentsPage(Uri url) {
+  final now = YearMonth.current();
+  final date = '${now.year}-${now.month.toString().padLeft(2, '0')}-05';
+  final all = [
+    _paymentRow(7, date),
+    _paymentRow(6, date),
+    _paymentRow(5, date),
+  ];
+  final page = int.parse(url.queryParameters['page'] ?? '1');
+  final rows = all.skip((page - 1) * 2).take(2).toList();
+  return http.Response.bytes(
+    utf8.encode(
+      jsonEncode({
+        'count': all.length,
+        'next': page == 1 ? 'http://testserver/api/payments/?page=2' : null,
+        'previous': null,
+        'results': rows,
+      }),
+    ),
+    200,
+  );
+}
+
+PayrollRepository _repo({int statusCode = 200, List<Uri>? requests}) {
   final client = MockClient((request) async {
     final path = request.url.path;
+    requests?.add(request.url);
     if (statusCode != 200) return http.Response('', statusCode);
+    if (path == '/api/payments/') return _paymentsPage(request.url);
     if (path == '/api/workers/') {
       return http.Response.bytes(
         utf8.encode(
@@ -194,6 +241,33 @@ void main() {
     await tester.tap(find.text('بستن'));
     await tester.pumpAndSettle();
     expect(find.text('جزئیات پرداخت'), findsNothing);
+  });
+
+  testWidgets('payments: pages, search and filters come from the server', (
+    tester,
+  ) async {
+    final requests = <Uri>[];
+    await _pumpApp(tester, _repo(requests: requests));
+    await tester.tap(find.text('پرداخت‌ها').last);
+    await tester.pumpAndSettle();
+
+    Iterable<Uri> paymentCalls() =>
+        requests.where((u) => u.path == '/api/payments/');
+
+    // Page 1 of 2, total count from the server.
+    expect(find.text('صفحه‌ی ۱ از ۲'), findsOneWidget);
+    expect(find.text('۳ پرداخت'), findsOneWidget);
+
+    await _tapCentered(tester, find.byTooltip('صفحه‌ی بعد'));
+    await tester.pumpAndSettle();
+    expect(paymentCalls().last.queryParameters['page'], '2');
+    expect(find.text('صفحه‌ی ۲ از ۲'), findsOneWidget);
+
+    // Search is sent to the server and returns to page 1.
+    await tester.enterText(find.byType(TextField).first, 'علی');
+    await tester.testTextInput.receiveAction(TextInputAction.search);
+    await tester.pumpAndSettle();
+    expect(paymentCalls().last.queryParameters, {'page': '1', 'search': 'علی'});
   });
 
   testWidgets('register payment: validation, preview, demo mode keeps input', (

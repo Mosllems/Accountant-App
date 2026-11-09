@@ -57,6 +57,7 @@ class MonthlyAccount(models.Model):
     class Meta:
         verbose_name = "حساب ماهانه"
         verbose_name_plural = "حساب های ماهانه"
+        ordering = ["-monthly_salary__year", "-monthly_salary__month", "id"]
 
     def __str__(self):
         return (

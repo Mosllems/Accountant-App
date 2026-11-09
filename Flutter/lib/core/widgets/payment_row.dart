@@ -27,7 +27,7 @@ class PaymentRow extends StatelessWidget {
     final p = entry.payment;
     final amount = formatMoney(p.amount);
     final date = formatApiDateLong(p.date);
-    final title = showWorker ? entry.worker.name : date;
+    final title = showWorker ? entry.workerName : date;
     return Semantics(
       button: onTap != null,
       label: '$title، $amount${showWorker ? '، $date' : ''}',

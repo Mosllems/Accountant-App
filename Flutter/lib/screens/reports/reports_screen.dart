@@ -323,11 +323,7 @@ class _WorkerReport extends StatelessWidget {
                     ]..sort((a, b) => b.compareByDate(a)))
                       Builder(
                         builder: (context) {
-                          final entry = PaymentEntry(
-                            payment: p,
-                            worker: worker,
-                            account: account,
-                          );
+                          final entry = PaymentEntry.of(p, worker, account);
                           return PaymentRow(
                             entry: entry,
                             showWorker: false,

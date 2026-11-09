@@ -312,10 +312,10 @@ class _MonthAccount extends StatelessWidget {
                     ),
                   Builder(
                     builder: (context) {
-                      final entry = PaymentEntry(
-                        payment: payments[i],
-                        worker: worker,
-                        account: account,
+                      final entry = PaymentEntry.of(
+                        payments[i],
+                        worker,
+                        account,
                       );
                       return PaymentRow(
                         entry: entry,

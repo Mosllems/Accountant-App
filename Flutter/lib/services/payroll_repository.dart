@@ -7,17 +7,80 @@ import '../data/placeholder/payment_create_placeholder.dart';
 import '../models/worker.dart';
 import 'api_client.dart';
 
-/// A payment together with its worker and monthly account.
+/// A payment together with its worker and the month of its account.
 class PaymentEntry {
   const PaymentEntry({
     required this.payment,
-    required this.worker,
-    required this.account,
+    required this.workerId,
+    required this.workerName,
+    required this.accountMonth,
   });
 
+  /// From the snapshot (worker details → accounts → payments).
+  PaymentEntry.of(Payment payment, Worker worker, MonthlyAccount account)
+    : this(
+        payment: payment,
+        workerId: worker.id,
+        workerName: worker.name,
+        accountMonth: account.yearMonth,
+      );
+
+  /// One row of `GET /api/payments/` (has `worker` + `monthly_account`).
+  factory PaymentEntry.fromListJson(Map<String, dynamic> json) {
+    final worker = json['worker'] as Map<String, dynamic>;
+    final account = json['monthly_account'] as Map<String, dynamic>?;
+    final year = account?['year'];
+    final month = account?['month'];
+    return PaymentEntry(
+      payment: Payment.fromJson(json),
+      workerId: worker['id'] as int,
+      workerName: worker['name'] as String? ?? '',
+      accountMonth: year is int && month is int ? YearMonth(year, month) : null,
+    );
+  }
+
   final Payment payment;
-  final WorkerDetail worker;
-  final MonthlyAccount account;
+  final int workerId;
+  final String workerName;
+
+  /// Month of the monthly account this payment belongs to.
+  final YearMonth? accountMonth;
+}
+
+/// One server page of `GET /api/payments/` (backend pagination).
+class PaymentPage {
+  const PaymentPage({
+    required this.page,
+    required this.items,
+    required this.count,
+    required this.hasNext,
+  });
+
+  factory PaymentPage.fromJson(int page, Map<String, dynamic> json) =>
+      PaymentPage(
+        page: page,
+        items: [
+          for (final row in json['results'] as List)
+            PaymentEntry.fromListJson(row as Map<String, dynamic>),
+        ],
+        count: json['count'] as int,
+        hasNext: json['next'] != null,
+      );
+
+  /// 1-based page number.
+  final int page;
+  final List<PaymentEntry> items;
+
+  /// Total rows matching the filters (all pages).
+  final int count;
+  final bool hasNext;
+
+  /// The page size is set by the backend; a full (non-last) page reveals it.
+  int get pageCount {
+    if (count == 0) return 0;
+    if (!hasNext) return page;
+    return items.isEmpty ? page : (count / items.length).ceil();
+  }
 }
 
 /// A worker's account for one month.
@@ -47,8 +110,7 @@ class PayrollSnapshot {
     final list = <PaymentEntry>[
       for (final w in workers)
         for (final a in w.monthlyAccounts)
-          for (final p in a.payments)
-            PaymentEntry(payment: p, worker: w, account: a),
+          for (final p in a.payments) PaymentEntry.of(p, w, a),
     ];
     list.sort((x, y) => y.payment.compareByDate(x.payment));
     return list;
@@ -164,6 +226,34 @@ class PayrollRepository extends ChangeNotifier {
   Future<void> deleteWorker(int id) async {
     await _api.deleteWorker(id);
     unawaited(refresh());
+  }
+
+  /// One page of payments from the server, with server-side search and
+  /// filters. Any malformed row fails the whole page (no partial data).
+  Future<PaymentPage> fetchPaymentsPage({
+    required int page,
+    String search = '',
+    int? workerId,
+    Jalali? from,
+    Jalali? to,
+  }) async {
+    final json = await _api.getPaymentsPage(
+      page: page,
+      search: search,
+      workerId: workerId,
+      dateFrom: from == null ? null : toApiDate(from),
+      dateTo: to == null ? null : toApiDate(to),
+    );
+    try {
+      return PaymentPage.fromJson(page, json);
+    } on ApiException {
+      rethrow;
+    } on Object {
+      throw ApiException(
+        ApiErrorKind.invalidResponse,
+        'داده‌های دریافتی از سرور معتبر نیست.',
+      );
+    }
   }
 
   /// Registers a payment against [account].

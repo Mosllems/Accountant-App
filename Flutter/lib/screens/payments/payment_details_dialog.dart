@@ -57,16 +57,12 @@ Future<void> showPaymentDetailsDialog(
                 ),
               ),
               const SizedBox(height: AppSpacing.lg),
-              InfoRow(
-                label: 'کارگر',
-                value: entry.worker.name,
-                emphasize: true,
-              ),
+              InfoRow(label: 'کارگر', value: entry.workerName, emphasize: true),
               InfoRow(label: 'تاریخ پرداخت', value: formatApiDateLong(p.date)),
-              if (entry.account.yearMonth != null)
+              if (entry.accountMonth != null)
                 InfoRow(
                   label: 'بابت حساب ماه',
-                  value: entry.account.yearMonth!.label,
+                  value: entry.accountMonth!.label,
                 ),
               if (p.description != null) ...[
                 const SizedBox(height: AppSpacing.sm),

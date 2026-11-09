@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     # third party
     "django_jalali",
     "rest_framework",
+    "django_filters",
     "debug_toolbar",
     "corsheaders",
 
@@ -152,3 +153,9 @@ CORS_ALLOWED_ORIGINS = [
 
 if DEBUG and not CORS_ALLOWED_ORIGINS:
     CORS_ALLOW_ALL_ORIGINS = True
+
+REST_FRAMEWORK = {
+    'PAGE_SIZE': 10,
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    
+}
